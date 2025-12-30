@@ -58,8 +58,13 @@ def parse_summary_file(filepath: Path) -> dict[str, Any]:
             if callsigns_str != "None detected":
                 metadata["callsigns"] = [c.strip() for c in callsigns_str.split(",")]
         elif line.startswith("- ") and "Topics:" in content[:content.find(line)]:
-            # Topic line
+            # Topic line - strip any malformed CALLSIGNS/SUMMARY text from old files
             topic = line[2:].strip()
+            # Remove any text after CALLSIGNS: or SUMMARY: (old streaming bug)
+            if "CALLSIGNS:" in topic:
+                topic = topic[:topic.find("CALLSIGNS:")].strip()
+            if "SUMMARY:" in topic:
+                topic = topic[:topic.find("SUMMARY:")].strip()
             if topic and topic not in metadata["topics"]:
                 metadata["topics"].append(topic)
 
