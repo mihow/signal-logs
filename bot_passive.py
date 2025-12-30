@@ -53,24 +53,22 @@ async def run_passive_bot(transport: BaseTransport):
         compute_type="int8"
     )
 
-    # LLM for summarization (not conversation)
-    llm = OLLamaLLMService(model=os.getenv("OLLAMA_MODEL", "llama3.3"))
+    # LLM for summarization (not conversation) - with JSON mode enabled
+    llm = OLLamaLLMService(
+        model=os.getenv("OLLAMA_MODEL", "llama3.3"),
+        format="json"  # Enable JSON mode for structured outputs
+    )
 
-    # System prompt for summarization mode
-    SUMMARY_SYSTEM_PROMPT = """You are a radio communication analyst. Your task is to analyze transcripts of radio conversations and extract:
+    # System prompt for JSON-structured summarization
+    SUMMARY_SYSTEM_PROMPT = """You are a radio communication analyst. Your task is to analyze transcripts of radio conversations and extract structured information.
 
-1. Main topics discussed
-2. Call signs mentioned (ham radio format: e.g., W1ABC, K2XYZ, N4DEF)
-3. Technical details (frequencies, signal reports, equipment)
-4. A concise summary
+You must respond with valid JSON containing:
+- topics: array of main topics discussed
+- callsigns: array of amateur radio call signs (format: W1ABC, K2XYZ, etc.)
+- summary: 2-3 sentence summary of the communication
+- digital_signals: array of any digital signals detected but not decoded (each with timestamp, duration_seconds, and optional signal_type)
 
-Be factual and technical. Focus on what was actually said.
-
-Always respond in this exact format:
-TOPICS: [comma-separated list]
-CALLSIGNS: [comma-separated list]
-SUMMARY: [2-3 sentences]
-"""
+Be factual and technical. Focus on what was actually said. Always return valid JSON."""
 
     messages = [
         {

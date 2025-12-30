@@ -6,19 +6,37 @@ and writing summary files for the passive monitoring bot.
 """
 
 import datetime
+import json
 import re
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 from loguru import logger
+from pydantic import BaseModel, Field
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.frames.frames import (
     TranscriptionFrame,
     TextFrame,
     Frame,
-    LLMMessagesFrame
+    LLMMessagesFrame,
+    LLMFullResponseEndFrame
 )
+
+
+class DigitalSignal(BaseModel):
+    """Detected digital signal that couldn't be decoded."""
+    timestamp: str = Field(description="ISO timestamp when signal was detected")
+    duration_seconds: float = Field(description="Duration of the signal in seconds")
+    signal_type: str | None = Field(default=None, description="Type of signal if identifiable (e.g., FT8, RTTY, PSK31)")
+
+
+class RadioSummary(BaseModel):
+    """Structured summary of radio communications."""
+    topics: list[str] = Field(description="Main topics discussed in the conversation")
+    callsigns: list[str] = Field(description="Amateur radio call signs mentioned (format: W1ABC, K2XYZ, etc.)")
+    summary: str = Field(description="2-3 sentence summary of the radio communication")
+    digital_signals: list[DigitalSignal] = Field(default_factory=list, description="Any digital signals detected but not decoded")
 
 
 class TranscriptBatchProcessor:
@@ -90,22 +108,25 @@ class TranscriptBatchProcessor:
             logger.warning("No transcripts in batch, skipping")
             return
 
-        # Create summary prompt
+        # Create summary prompt with JSON schema
         transcript_text = self._format_batch_for_llm()
 
-        summary_prompt = f"""Analyze this radio communication transcript and provide:
+        # Get JSON schema from Pydantic model
+        schema = RadioSummary.model_json_schema()
 
-1. Main topics discussed
-2. Call signs mentioned (format: XXNXXX like W1ABC, K2XYZ)
-3. Brief summary (2-3 sentences)
+        summary_prompt = f"""Analyze this radio communication transcript and extract structured information.
 
 Transcript:
 {transcript_text}
 
-Respond in this exact format:
-TOPICS: [comma-separated list]
-CALLSIGNS: [comma-separated list or "None" if none found]
-SUMMARY: [2-3 sentences]
+Please analyze and return a JSON object with:
+- topics: Array of main topics discussed (strings)
+- callsigns: Array of amateur radio call signs mentioned (format: W1ABC, K2XYZ, etc.)
+- summary: A 2-3 sentence summary of the communication
+- digital_signals: Array of any digital signals detected (empty array if none)
+
+Respond with valid JSON matching this schema:
+{json.dumps(schema, indent=2)}
 """
 
         logger.info(f"Sending batch to LLM ({len(self._current_batch)} transcripts)")
@@ -160,23 +181,23 @@ class SummaryWriter(FrameProcessor):
         # CRITICAL: Must call super().process_frame() FIRST to handle StartFrame and lifecycle frames
         await super().process_frame(frame, direction)
 
-        # Collect LLM response text
+        # Collect LLM response text frames
         if isinstance(frame, TextFrame) and frame.text and frame.text.strip():
             self._llm_response += frame.text
 
-            # Check if we have a complete response with our markers
-            if "TOPICS:" in self._llm_response and "SUMMARY:" in self._llm_response:
-                if self._pending_batch_metadata:
-                    logger.info("Complete LLM response received, writing summary")
-                    await self._write_summary_file(
-                        self._llm_response,
-                        self._pending_batch_metadata
-                    )
-                    self._pending_batch_metadata = None
-                    self._llm_response = ""
-                else:
-                    logger.warning("LLM response received but no batch metadata available")
-                    self._llm_response = ""
+        # Write summary when LLM finishes generating response
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            if self._llm_response and self._pending_batch_metadata:
+                logger.info("LLM response complete, writing summary")
+                await self._write_summary_file(
+                    self._llm_response,
+                    self._pending_batch_metadata
+                )
+                self._pending_batch_metadata = None
+                self._llm_response = ""
+            elif self._llm_response:
+                logger.warning("LLM response complete but no batch metadata available")
+                self._llm_response = ""
 
         # Pass all frames through
         await self.push_frame(frame, direction)
@@ -184,22 +205,20 @@ class SummaryWriter(FrameProcessor):
     async def _write_summary_file(self, llm_response: str, metadata: dict):
         """Format and write summary file."""
 
-        # Parse LLM response
-        topics, callsigns, summary = self._parse_llm_response(llm_response)
+        # Parse LLM response into structured object
+        radio_summary = self._parse_llm_response(llm_response)
 
         # Generate filename
         start_time = metadata["batch_start"]
         timestamp = start_time.strftime("%Y%m%d-%H%M%S")
-        topic_slug = self._slugify_topic(topics[0] if topics else "conversation")
+        topic_slug = self._slugify_topic(radio_summary.topics[0] if radio_summary.topics else "conversation")
         filename = f"{timestamp}_{topic_slug}.txt"
 
         # Format content
         content = self._format_summary(
             start_time=metadata["batch_start"],
             end_time=metadata["batch_end"],
-            topics=topics,
-            callsigns=callsigns,
-            summary=summary,
+            radio_summary=radio_summary,
             transcript=metadata["transcript"],
             speaker_count=metadata.get("speaker_count", None)
         )
@@ -211,29 +230,59 @@ class SummaryWriter(FrameProcessor):
 
         logger.info(f"✅ Summary saved: {filepath}")
 
-    def _parse_llm_response(self, response: str) -> tuple[list[str], list[str], str]:
-        """Extract topics, callsigns, summary from LLM response."""
-        topics = []
-        callsigns = []
-        summary = ""
+    def _parse_llm_response(self, response: str) -> RadioSummary:
+        """Parse JSON response from LLM into RadioSummary object.
 
-        for line in response.split("\n"):
-            line = line.strip()
-            if line.startswith("TOPICS:"):
-                topics_str = line[7:].strip()
-                if topics_str and topics_str != "[]":
-                    topics = [t.strip() for t in topics_str.split(",")]
-            elif line.startswith("CALLSIGNS:"):
-                callsigns_str = line[10:].strip()
-                if callsigns_str and callsigns_str != "[]":
-                    callsigns = [c.strip() for c in callsigns_str.split(",")]
-            elif line.startswith("SUMMARY:"):
-                summary = line[8:].strip()
+        Args:
+            response: JSON string from LLM (may be wrapped in markdown code fences)
 
-        return topics, callsigns, summary
+        Returns:
+            RadioSummary object with parsed data, or empty/default values if parsing fails
+        """
+        logger.debug(f"Parsing LLM JSON response (length: {len(response)})")
 
-    def _format_summary(self, start_time, end_time, topics, callsigns,
-                       summary, transcript, speaker_count=None) -> str:
+        try:
+            # Strip markdown code fences if present (common with LLMs)
+            json_str = response.strip()
+            if json_str.startswith("```json"):
+                json_str = json_str[7:]  # Remove ```json
+            elif json_str.startswith("```"):
+                json_str = json_str[3:]  # Remove ```
+
+            if json_str.endswith("```"):
+                json_str = json_str[:-3]  # Remove trailing ```
+
+            json_str = json_str.strip()
+
+            # Parse JSON
+            data = json.loads(json_str)
+            summary = RadioSummary(**data)
+            logger.info(f"Successfully parsed summary: {len(summary.topics)} topics, {len(summary.callsigns)} callsigns, {len(summary.digital_signals)} digital signals")
+            return summary
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.debug(f"Response that failed to parse: {response[:500]}")
+
+            # Return default empty summary
+            return RadioSummary(
+                topics=["Unable to parse summary"],
+                callsigns=[],
+                summary="Error: LLM response was not valid JSON",
+                digital_signals=[]
+            )
+
+        except Exception as e:
+            logger.error(f"Unexpected error parsing LLM response: {e}")
+            return RadioSummary(
+                topics=["Error parsing response"],
+                callsigns=[],
+                summary=f"Error: {str(e)}",
+                digital_signals=[]
+            )
+
+    def _format_summary(self, start_time, end_time, radio_summary: RadioSummary,
+                       transcript, speaker_count=None) -> str:
         """Create formatted summary file content."""
 
         duration_seconds = (end_time - start_time).total_seconds()
@@ -252,17 +301,31 @@ Session Start: {start_time.strftime("%Y-%m-%d %H:%M:%S")}
 Session End:   {end_time.strftime("%Y-%m-%d %H:%M:%S")}
 Duration:      {duration_str}
 Speakers:      {speaker_count} detected
-Call Signs:    {", ".join(callsigns) if callsigns else "None detected"}
+Call Signs:    {", ".join(radio_summary.callsigns) if radio_summary.callsigns else "None detected"}
 
 Topics:
-{chr(10).join("- " + t for t in topics) if topics else "- General conversation"}
+{chr(10).join("- " + t for t in radio_summary.topics) if radio_summary.topics else "- General conversation"}
 
 =================================================
 Summary
 =================================================
 
-{summary if summary else "No summary available"}
+{radio_summary.summary if radio_summary.summary else "No summary available"}
+"""
 
+        # Add digital signals section if any were detected
+        if radio_summary.digital_signals:
+            content += f"""
+=================================================
+Digital Signals Detected (Not Decoded)
+=================================================
+
+"""
+            for sig in radio_summary.digital_signals:
+                sig_type = f" ({sig.signal_type})" if sig.signal_type else ""
+                content += f"[{sig.timestamp}] Duration: {sig.duration_seconds:.1f}s{sig_type}\n"
+
+        content += """
 =================================================
 Full Transcript
 =================================================
