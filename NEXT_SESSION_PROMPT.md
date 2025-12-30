@@ -1,272 +1,218 @@
-# Next Session: Passive Bot Summary Testing & Web UI
+# Next Session: Digital Signal Detection & Web UI Enhancements
 
 ## Context from Previous Session (2025-12-30)
 
 ### ✅ Completed Work
-**Session Focus:** Fixed critical StartFrame bug in passive listening bot and verified production functionality.
+
+**Session Focus:** Fixed LLM summary generation and built web UI for viewing logs
 
 **Major Accomplishments:**
-1. **Fixed StartFrame Error** - `passive_processors.py:159`
-   - Added `await super().process_frame(frame, direction)` call
-   - Zero errors in production testing
 
-2. **Fixed Metadata Passing** - `passive_processors.py:27,113-120,154,157-182`
-   - Changed from TextFrame metadata to direct reference passing
-   - `TranscriptBatchProcessor` now holds reference to `SummaryWriter`
+1. **Replaced Brittle Regex Parsing with Structured JSON** - `passive_processors.py:27-39,233-282`
+   - Added Pydantic models: `RadioSummary`, `DigitalSignal`
+   - Enabled Ollama JSON mode: `bot_passive.py:57-59`
+   - LLM now returns valid JSON with topics, callsigns, summary, digital_signals
+   - Strips markdown code fences automatically (```json...```)
+   - Wait for `LLMFullResponseEndFrame` instead of checking string markers
+   - Graceful fallback on parse failures
 
-3. **Production Testing Verified**
-   - 139 transcriptions captured across 3 summary files
-   - 13 speakers detected via pause-based algorithm
-   - All files created successfully in `summaries/` directory
-   - Zero pipeline errors during 15-minute live test
+2. **Built Web UI for Viewing Summaries** - `summary_viewer.py:1-403`
+   - FastAPI server on port 8080
+   - Dark themed monospace UI optimized for radio monitoring
+   - Lists all summaries with metadata (callsigns, topics, duration, digital signals)
+   - Click cards to view full transcript
+   - Auto-refreshes every 30 seconds
+   - Parses summary files and extracts structured metadata
+
+3. **Documented Digital Signal Detection** - `docs/claude/planning/DIGITAL-SIGNAL-DETECTION.md`
+   - Three audio routing approaches for Pipecat
+   - Example `SignalDetector` implementation (amplitude + FFT)
+   - TorchSig ML-based classification approach
+   - Integration guide with batch processor
+   - Testing resources and implementation checklist
 
 **Key Files Modified:**
-- `passive_processors.py` - Core processors (batch, summary writer)
-- `bot_passive.py` - Main passive bot server
-- `PLAN-passive-listening-bot.md` - Updated with fixes and roadmap
+- `passive_processors.py` - JSON parsing, Pydantic models, digital signal support
+- `bot_passive.py` - Enabled JSON mode for Ollama
+- `summary_viewer.py` - NEW: Web UI for viewing summaries
+- `docs/claude/planning/DIGITAL-SIGNAL-DETECTION.md` - NEW: Future work planning
 
-**Current Bot Status:**
-- ✅ Server runs on http://localhost:7860
-- ✅ Transcription working (Whisper STT)
-- ✅ Summary files being created
-- ⚠️ Summaries may need refinement (casual conversation vs radio content)
+**Current Status:**
+- ✅ All integration tests passing
+- ✅ Summary generation working with proper topics, callsigns, and summaries
+- ✅ Web UI running at http://localhost:8080
+- ✅ Digital signal logging supported (waiting for detection implementation)
+- ⚠️ Digital signal detection NOT yet implemented (logged but not detected)
 
 ---
 
 ## 🎯 This Session's Objectives
 
 ### Primary Goal
-**Test and validate summary generation quality, then build a simple web UI to view summaries.**
+**Implement basic digital signal detection and test with real radio recordings.**
 
 ### Task Breakdown
 
-#### Task 1: Evaluate Current Summaries (30 min)
+#### Task 1: Review and Test Current System (15 min)
 
 **What to Check:**
-1. **Review Existing Summary Files**
-   - Location: `summaries/` directory
-   - Files created:
-     - `20251230-101546_conversation.txt` (63 transcriptions)
-     - `20251230-102049_conversation.txt` (60 transcriptions)
-     - `20251230-102607_conversation.txt` (16 transcriptions)
+1. **Run the passive bot and web UI**
+   ```bash
+   # Terminal 1: Start passive bot
+   uv run bot_passive.py
 
-2. **Analyze Summary Quality**
-   - Are topics being extracted correctly?
-   - Is call sign detection working? (Format: W1ABC, K2XYZ, etc.)
-   - Are speaker counts accurate?
-   - Is the LLM summary field populated? (Currently shows "No summary available")
+   # Terminal 2: Start web UI
+   uv run python summary_viewer.py
 
-3. **Test with Radio Content**
-   - Available recordings: `recordings/` directory
-     - `merged_20251229_010801.wav` (575.8s, 22050Hz)
-     - `merged_20251229_014527.wav`
-     - `merged_20251229_233629.wav`
-     - `merged_20251230_000117.wav`
-     - `merged_20251230_001847.wav`
-   - Test file: `test2.wav` (11.5s, 16000Hz) - Good for quick tests
+   # Terminal 3: Open browser
+   xdg-open http://localhost:8080
+   ```
 
-4. **Identify Issues**
-   - Why is LLM not generating summaries? (Logging shows: "LLM response received but no batch metadata available")
-   - Is the batch processor actually triggering?
-   - Are transcripts being batched correctly?
+2. **Test with existing recordings**
+   - Recordings available in `recordings/` directory
+   - Test files: `merged_20251229_*.wav`
+   - Check if summaries are being generated correctly
 
-**Commands to Run:**
-```bash
-# Check current summaries
-ls -lh summaries/
-cat summaries/*.txt | head -100
+3. **Review web UI functionality**
+   - Can you see all summaries?
+   - Do digital signals display (if any)?
+   - Does the auto-refresh work?
+   - Can you click into full transcripts?
 
-# Check bot logs for batch processing
-grep -i "batch\|summary" /tmp/claude/.../b060bbc.output | tail -50
+#### Task 2: Implement Basic Signal Detector (1-2 hours)
 
-# Test with a recording (if bot not running)
-# First: Stop current bot if running
-pkill -f bot_passive.py
+**Reference:** `docs/claude/planning/DIGITAL-SIGNAL-DETECTION.md`
 
-# Option A: Use the integration test
-uv run python test_passive_integration.py
+**Implementation Steps:**
 
-# Option B: Use the audio file test (needs updates)
-uv run python test_passive_bot.py test2.wav
-```
+1. **Create SignalDetector Processor** - New file: `signal_detector.py`
+   ```python
+   class SignalDetector(FrameProcessor):
+       """Detect digital signals based on audio characteristics."""
 
-#### Task 2: Fix Summary Generation (if broken) (45 min)
+       # Use amplitude + spectral analysis
+       # Emit DigitalSignalFrame when detected
+   ```
 
-**Potential Issues Identified:**
-1. **Batch processor not wired correctly**
-   - Check: `bot_passive.py:91-95` - Is `batch_processor` connected to transcript events?
-   - Currently: Batch processor created but not receiving transcripts!
-   - Fix: Need to connect transcript processor events to batch processor
+2. **Create DigitalSignalFrame** - Add to `passive_processors.py` or new `custom_frames.py`
+   ```python
+   class DigitalSignalFrame(DataFrame):
+       timestamp: str
+       duration_seconds: float
+       signal_type: str | None
+   ```
 
-2. **LLM receiving transcripts but not batch metadata**
-   - Warning seen: "LLM response received but no batch metadata available"
-   - This means LLM is generating responses, but `SummaryWriter` doesn't have metadata
-   - Likely cause: Batch processor never calls `_process_batch()`
+3. **Wire Up in Pipeline** - `bot_passive.py:103-111`
+   ```python
+   pipeline = Pipeline([
+       transport.input(),
+       stt,
+       signal_detector,  # ADD THIS
+       transcript_processor.user(),
+       ...
+   ])
+   ```
 
-**Action Items:**
-- [ ] Review `bot_passive.py` - How are transcripts getting to batch processor?
-- [ ] Add event handler for transcript updates → batch processor
-- [ ] Verify `batch_processor._process_batch()` is being called
-- [ ] Test batch trigger with manual transcript injection
+4. **Add Event Handler** - `bot_passive.py` after line 135
+   ```python
+   @signal_detector.event_handler("on_digital_signal_detected")
+   async def on_digital_signal(detector, frame):
+       await batch_processor.add_digital_signal(frame)
+   ```
 
-**Expected Flow:**
-```
-Audio → Whisper → TranscriptProcessor → (EVENT) → TranscriptBatchProcessor
-                                                          ↓
-                                                    _process_batch()
-                                                          ↓
-                                    Set metadata in SummaryWriter
-                                                          ↓
-                                    Queue LLMMessagesFrame to task
-                                                          ↓
-                                    LLM generates response → SummaryWriter
-                                                          ↓
-                                                   Write summary file
-```
+5. **Update TranscriptBatchProcessor** - `passive_processors.py:42`
+   ```python
+   def __init__(self, ...):
+       self._digital_signals = []  # Add this
 
-#### Task 3: Build Simple Web UI (1-2 hours)
+   async def add_digital_signal(self, frame):
+       """Collect digital signal detections."""
+       self._digital_signals.append({...})
 
-**Reference Implementation:**
-- Framework location: `../pipecat-test-web/` directory
-- Check what's already there for structure/patterns
+   async def _process_batch(self):
+       # Include in metadata
+       self._summary_writer._pending_batch_metadata["digital_signals"] = ...
+   ```
 
-**Requirements:**
-1. **Summary List Page** (`/summaries`)
-   - Display all summary files from `summaries/` directory
-   - Show: timestamp, duration, speaker count, topics, call signs
-   - Sort by date (newest first)
-   - Click to view details
+**Testing:**
+- Use `test2.wav` (11.5s) for quick tests
+- Use `recordings/merged_*.wav` for real radio content
+- Check web UI to see if digital signals appear
 
-2. **Summary Detail Page** (`/summary/<filename>`)
-   - Full transcript with timestamps
-   - Speaker breakdown
-   - Topics and call signs highlighted
-   - Metadata summary
+#### Task 3: Tune Detection Parameters (30-60 min)
 
-3. **Live Monitor Page** (`/monitor`) (Optional - if time)
-   - Current batch transcripts (live)
-   - Time until next summary
+**Goal:** Minimize false positives while catching real digital signals
+
+**Approach:**
+1. Test with known digital signal recordings (FT8, RTTY, PSK31)
+   - Download samples from https://www.sigidwiki.com/wiki/
+   - Test detection threshold and duration settings
+
+2. Test with voice-only recordings
+   - Should NOT detect digital signals in normal conversation
+   - Adjust spectral flatness and harmonic ratio thresholds
+
+3. Test with mixed content (voice + digital)
+   - Should detect only the digital portions
+   - Verify timestamps and durations are accurate
+
+**Parameters to Tune:**
+- `threshold_db`: Minimum amplitude to consider (default: -20 dB)
+- `min_duration_sec`: Minimum signal length (default: 0.5s)
+- `spectral_flatness`: Threshold for "noise-like" signals (default: 0.5)
+- `harmonic_ratio`: Threshold for non-harmonic content (default: 0.3)
+
+#### Task 4: Web UI Enhancements (Optional - if time)
+
+**Possible Improvements:**
+1. **Filtering and Search**
+   - Filter by callsign
+   - Filter by topic
+   - Search transcript content
+   - Date range selection
+
+2. **Statistics Dashboard**
+   - Total summaries
+   - Total digital signals detected
+   - Most active callsigns
+   - Signal type distribution chart
+
+3. **Export Functionality**
+   - Export to JSON
+   - Export to CSV
+   - Download individual summaries
+
+4. **Live Monitoring**
    - WebSocket for real-time updates
-
-**Implementation Approach:**
-```python
-# Add to bot_passive.py or create new summary_api.py
-
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
-from pathlib import Path
-import json
-
-app = FastAPI()
-
-@app.get("/api/summaries")
-async def list_summaries():
-    """Return list of all summary files with metadata"""
-    summaries = []
-    for file in Path("summaries").glob("*.txt"):
-        # Parse summary file for metadata
-        with open(file) as f:
-            content = f.read()
-            # Extract metadata from file
-            summaries.append({
-                "filename": file.name,
-                "path": str(file),
-                "timestamp": file.stat().st_mtime,
-                # ... parse content for topics, speakers, etc.
-            })
-    return sorted(summaries, key=lambda x: x["timestamp"], reverse=True)
-
-@app.get("/api/summary/{filename}")
-async def get_summary(filename: str):
-    """Return full summary content"""
-    file_path = Path("summaries") / filename
-    if not file_path.exists():
-        return {"error": "Not found"}
-
-    with open(file_path) as f:
-        content = f.read()
-
-    # Parse and return structured data
-    return {"filename": filename, "content": content}
-
-@app.get("/")
-async def index():
-    """Serve simple HTML UI"""
-    return HTMLResponse(open("summary_viewer.html").read())
-```
-
-**HTML Template Structure:**
-```html
-<!-- summary_viewer.html -->
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Passive Bot Summaries</title>
-    <style>
-        body { font-family: monospace; max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .summary-card { border: 1px solid #ccc; margin: 10px 0; padding: 15px; }
-        .summary-card:hover { background: #f5f5f5; cursor: pointer; }
-        .timestamp { color: #666; font-size: 0.9em; }
-        .topics { color: #0066cc; }
-        .callsigns { color: #cc6600; font-weight: bold; }
-        .transcript { white-space: pre-wrap; background: #f9f9f9; padding: 10px; }
-    </style>
-</head>
-<body>
-    <h1>📻 Passive Bot Summaries</h1>
-    <div id="summaries"></div>
-
-    <script>
-        // Fetch and display summaries
-        fetch('/api/summaries')
-            .then(r => r.json())
-            .then(summaries => {
-                const container = document.getElementById('summaries');
-                summaries.forEach(s => {
-                    const card = document.createElement('div');
-                    card.className = 'summary-card';
-                    card.innerHTML = `
-                        <div class="timestamp">${new Date(s.timestamp * 1000).toLocaleString()}</div>
-                        <div class="topics">Topics: ${s.topics || 'None'}</div>
-                        <div class="callsigns">Call Signs: ${s.callsigns || 'None'}</div>
-                        <div>Speakers: ${s.speaker_count || 0} | Duration: ${s.duration || 'Unknown'}</div>
-                    `;
-                    card.onclick = () => window.location = '/summary/' + s.filename;
-                    container.appendChild(card);
-                });
-            });
-    </script>
-</body>
-</html>
-```
+   - Show current batch progress
+   - Display "listening" status
 
 ---
 
 ## 📁 Key Files & Locations
 
 **Core Code:**
-- `bot_passive.py:1-150` - Main bot server
-- `passive_processors.py:1-291` - TranscriptBatchProcessor, SummaryWriter
-- `PLAN-passive-listening-bot.md` - Complete documentation and roadmap
+- `bot_passive.py:1-184` - Main bot server (add signal detector here)
+- `passive_processors.py:1-337` - Batch processor, summary writer, Pydantic models
+- `summary_viewer.py:1-403` - Web UI server
+- `signal_detector.py` - NEW: To be created
+
+**Documentation:**
+- `docs/claude/planning/DIGITAL-SIGNAL-DETECTION.md` - Implementation guide
+- `NEXT_SESSION_PROMPT.md` - This file
 
 **Test Files:**
-- `test_passive_integration.py` - Full pipeline test (WORKING)
-- `test_passive_bot.py` - Audio file test (needs fixing)
-- `verify_passive_bot.py` - Production verification script
+- `test_passive_integration.py` - Integration tests
+- `recordings/*.wav` - Real radio recordings for testing
 
 **Data Directories:**
-- `summaries/` - Generated summary files (3 files currently)
+- `summaries/` - Generated summary files (4 files currently)
 - `recordings/` - Test audio recordings (5 WAV files)
 - `test_summaries/` - Integration test output
 
-**Reference Code:**
-- `../pipecat-test-web/` - Web UI framework reference
-
-**Environment:**
-- Bot runs on: http://localhost:7860
-- Client UI: http://localhost:7860/client
-- Ollama: http://localhost:11434 (llama3.3 model)
-- Whisper: CPU mode, base model
+**Web UI:**
+- URL: http://localhost:8080
+- Port: 8080 (configurable)
 
 ---
 
@@ -274,27 +220,26 @@ async def index():
 
 **Answer these during the session:**
 
-1. **Is the batch processor receiving transcripts?**
-   - Add logging to `TranscriptBatchProcessor.add_transcript()`
-   - Check if `_current_batch` is being populated
+1. **What's the false positive rate for digital signal detection?**
+   - Test with voice-only recordings
+   - Test with known digital signals
+   - Tune thresholds to minimize false positives
 
-2. **Is `_process_batch()` being called?**
-   - Add logging at start of `_process_batch()`
-   - Check batch window timer logic
+2. **Can we distinguish between different digital signal types?**
+   - FT8 vs RTTY vs PSK31
+   - Use spectral features (peak frequency, bandwidth)
+   - May need ML for accurate classification
 
-3. **Why does SummaryWriter not have metadata?**
-   - Verify `batch_processor` has reference to `summary_writer`
-   - Check if `_pending_batch_metadata` is being set
-   - Add logging when metadata is set
+3. **How does signal detection affect performance?**
+   - Does FFT analysis slow down the pipeline?
+   - Should we downsample audio before analysis?
+   - Can we run detection in parallel?
 
-4. **Is the LLM generating proper responses?**
-   - Check LLM prompt in logs
-   - Verify response format matches expected: "TOPICS: ... CALLSIGNS: ... SUMMARY: ..."
-
-5. **What's in the existing summary files?**
-   - Read through `summaries/*.txt`
-   - Check if "No summary available" is in all files
-   - Look for any successfully parsed summaries
+4. **Are the existing summaries accurate?**
+   - Review summaries in web UI
+   - Do topics make sense?
+   - Are callsigns being detected correctly?
+   - Is the LLM summary helpful?
 
 ---
 
@@ -302,89 +247,69 @@ async def index():
 
 **By end of session, should have:**
 
-✅ **Summary Generation Validated**
-- [ ] Identified why summaries aren't working (if broken)
-- [ ] Fixed batch processor wiring
-- [ ] Generated at least 1 complete summary with topics/callsigns
-- [ ] Tested with both live mic and recording file
+✅ **Digital Signal Detection Working**
+- [ ] SignalDetector processor implemented
+- [ ] DigitalSignalFrame created
+- [ ] Wired into pipeline and batch processor
+- [ ] Tested with real recordings
+- [ ] Digital signals appearing in web UI
 
-✅ **Basic Web UI Working**
-- [ ] List page shows all summaries
-- [ ] Can click to view full transcript
-- [ ] Metadata is displayed correctly
-- [ ] UI is accessible on localhost
+✅ **Detection Quality Validated**
+- [ ] False positive rate < 5% on voice-only recordings
+- [ ] Detects known digital signals (FT8, RTTY, etc.)
+- [ ] Timestamps and durations are accurate
+- [ ] Signal types classified (even if basic)
 
 ✅ **Documentation Updated**
-- [ ] Added findings to PLAN-passive-listening-bot.md
-- [ ] Noted any new bugs discovered
-- [ ] Updated "Next Steps" section
+- [ ] Updated DIGITAL-SIGNAL-DETECTION.md with findings
+- [ ] Noted any challenges or gotchas
+- [ ] Updated this file for next session
 
 ---
 
 ## 💡 Tips & Reminders
 
-**Debugging Approach:**
-1. Start by reading existing summary files
-2. Run integration test to see current behavior
-3. Add strategic logging before making changes
-4. Test incrementally (don't change everything at once)
+**Audio Analysis:**
+- Use `numpy` for FFT and signal processing
+- Consider downsampling to 8kHz for faster processing
+- Cache FFT results if analyzing same audio twice
+- Digital signals typically have flat spectrum (high entropy)
 
-**Web UI Development:**
-1. Start simple - just list files first
-2. Use browser to test (no need for fancy framework)
-3. Can integrate with existing bot server or run separately
-4. Reference pipecat-test-web for patterns
+**Pipeline Integration:**
+- Audio frames pass through processors automatically
+- Don't consume AudioRawFrames (let them flow through)
+- Emit custom frames (DigitalSignalFrame) alongside audio
+- Use event handlers to collect custom frames
+
+**Testing:**
+- Start with `test2.wav` (quick, known content)
+- Then test with `recordings/merged_*.wav` (real radio)
+- Use web UI to verify results visually
+- Check logs for detection events
 
 **Common Pitfalls:**
-- Don't forget to restart bot after code changes
-- Remember to check logs for errors
-- Summary files might be cached - check timestamps
-- Whisper needs 16kHz audio - resample if needed
-
-**Quick Test Commands:**
-```bash
-# Kill existing bot
-pkill -f bot_passive.py
-
-# Start fresh bot with logging
-uv run bot_passive.py 2>&1 | tee bot.log
-
-# Monitor summaries being created
-watch -n 1 'ls -lh summaries/ && tail -20 summaries/*.txt'
-
-# Test integration (includes batch trigger)
-uv run python test_passive_integration.py
-```
+- FFT on 16kHz audio can be slow - consider downsampling
+- Too sensitive threshold = many false positives
+- Too high threshold = miss real signals
+- Speaker detection still crude (pause-based) - many false speakers
 
 ---
 
 ## 📚 References
 
-**Pipecat Concepts:**
-- FrameProcessor lifecycle: StartFrame → process → EndFrame
-- Event handlers: `@processor.event_handler("event_name")`
-- Pipeline flow: frames flow downstream via `push_frame()`
+**Audio Signal Processing:**
+- NumPy FFT: https://numpy.org/doc/stable/reference/routines.fft.html
+- Spectral flatness: https://en.wikipedia.org/wiki/Spectral_flatness
+- Digital modulation: https://www.sigidwiki.com/
 
-**Current Bot Architecture:**
-```
-WebRTC/Audio → Whisper STT → TranscriptProcessor
-                                      ↓
-                              (transcripts to LLM context)
-                                      ↓
-                              LLMContextAggregator
-                                      ↓
-                              OLLamaLLM
-                                      ↓
-                              SummaryWriter
-```
+**Pipecat:**
+- FrameProcessor: `.venv/lib/python3.12/site-packages/pipecat/processors/frame_processor.py`
+- Custom frames: `.venv/lib/python3.12/site-packages/pipecat/frames/frames.py`
+- Event handlers: https://github.com/pipecat-ai/pipecat/tree/main/examples
 
-**Missing Connection:**
-```
-TranscriptProcessor → (NEED EVENT HANDLER) → TranscriptBatchProcessor
-                                                      ↓
-                                              _process_batch()
-                                                      ↓
-                                          Set metadata in SummaryWriter
-```
+**Digital Signal Samples:**
+- FT8: https://physics.princeton.edu/pulsar/k1jt/FT8_samples.wav
+- RTTY: https://www.sigidwiki.com/wiki/Radioteletype
+- PSK31: https://www.sigidwiki.com/wiki/PSK31
 
 Good luck! 🚀
